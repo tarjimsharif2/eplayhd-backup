@@ -1,0 +1,140 @@
+import { useEffect, useRef, useMemo, forwardRef, useState } from 'react';
+import { useSiteSettings } from '@/hooks/useSiteSettings';
+import { trackAdImpression } from '@/hooks/useGoogleAnalytics';
+import { useAdClickProtectionContext } from '@/components/AdClickProtectionProvider';
+import { useCurrentUserPermissions } from '@/hooks/usePermissions';
+
+interface AdSlotProps {
+  position: 'header' | 'sidebar' | 'footer' | 'in_article' | 'popup';
+  className?: string;
+}
+
+const AdSlot = forwardRef<HTMLDivElement, AdSlotProps>(({ position, className = '' }, ref) => {
+  const { data: settings } = useSiteSettings();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const hasExecuted = useRef(false);
+  const hasTrackedImpression = useRef(false);
+  // Start hidden to avoid CLS: reveal only once the ad injects visible content.
+  const [isEmpty, setIsEmpty] = useState(true);
+  const { isBlocked, trackAdClick } = useAdClickProtectionContext();
+  const { isAdmin } = useCurrentUserPermissions();
+
+  const adCode = useMemo(() => {
+    if (!settings?.ads_enabled || isAdmin) return null;
+
+    const adCodeMap: Record<string, string | null | undefined> = {
+      header: settings.header_ad_code,
+      sidebar: settings.sidebar_ad_code,
+      footer: settings.footer_ad_code,
+      in_article: settings.in_article_ad_code,
+      popup: settings.popup_ad_code,
+    };
+
+    return adCodeMap[position] || null;
+  }, [settings, position, isAdmin]);
+
+  useEffect(() => {
+    if (!adCode || !containerRef.current || hasExecuted.current || isBlocked) return;
+
+    const container = containerRef.current;
+    container.innerHTML = '';
+    
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = adCode;
+
+    const scripts: HTMLScriptElement[] = [];
+    const nonScriptNodes: Node[] = [];
+
+    tempDiv.childNodes.forEach((node) => {
+      if (node.nodeName === 'SCRIPT') {
+        scripts.push(node as HTMLScriptElement);
+      } else {
+        nonScriptNodes.push(node.cloneNode(true));
+      }
+    });
+
+    nonScriptNodes.forEach((node) => {
+      container.appendChild(node);
+    });
+
+    scripts.forEach((oldScript) => {
+      const newScript = document.createElement('script');
+      Array.from(oldScript.attributes).forEach((attr) => {
+        newScript.setAttribute(attr.name, attr.value);
+      });
+      if (oldScript.src) {
+        newScript.src = oldScript.src;
+        newScript.async = true;
+      } else {
+        newScript.textContent = `try {\n${oldScript.textContent || ''}\n} catch (error) { console.warn('Ad script blocked after runtime error', error); }`;
+      }
+      container.appendChild(newScript);
+    });
+
+    hasExecuted.current = true;
+
+    // Track clicks on the ad container
+    const handleClick = () => {
+      trackAdClick();
+    };
+    container.addEventListener('click', handleClick);
+
+    if (!hasTrackedImpression.current) {
+      trackAdImpression(position);
+      hasTrackedImpression.current = true;
+    }
+
+    return () => {
+      hasExecuted.current = false;
+      container.removeEventListener('click', handleClick);
+    };
+  }, [adCode, position, isBlocked, trackAdClick]);
+
+  // Collapse the slot if the ad doesn't render any visible content
+  useEffect(() => {
+    if (!adCode || !containerRef.current) return;
+    const el = containerRef.current;
+    const check = () => {
+      const hasVisible = Array.from(el.children).some((c) => {
+        if (c.tagName === 'SCRIPT') return false;
+        const r = (c as HTMLElement).getBoundingClientRect();
+        return r.height > 1 && r.width > 1;
+      });
+      // Only reveal once content appears; never re-collapse after reveal
+      // to avoid layout shift after the ad is visible.
+      if (hasVisible) setIsEmpty(false);
+    };
+    const timers = [setTimeout(check, 800), setTimeout(check, 2500), setTimeout(check, 5000)];
+    return () => timers.forEach(clearTimeout);
+  }, [adCode]);
+
+  useEffect(() => {
+    hasExecuted.current = false;
+    hasTrackedImpression.current = false;
+    setIsEmpty(true);
+  }, [position]);
+
+  // Don't render if admin, blocked, or no ad code
+  if (!adCode || isBlocked || isAdmin) return null;
+
+  return (
+    <div 
+      ref={(node) => {
+        containerRef.current = node;
+        if (typeof ref === 'function') ref(node);
+        else if (ref) ref.current = node;
+      }}
+      className={`ad-slot ad-slot-${position} ${className}`}
+      style={{
+        width: '100%',
+        overflow: 'visible',
+        display: isEmpty ? 'none' : 'block',
+      }}
+      data-ad-position={position}
+    />
+  );
+});
+
+AdSlot.displayName = 'AdSlot';
+
+export default AdSlot;

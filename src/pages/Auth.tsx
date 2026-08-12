@@ -1,0 +1,143 @@
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import Header from "@/components/Header";
+import Footer from "@/components/Footer";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useAuth } from "@/hooks/useAuth";
+import { usePublicSiteSettings } from "@/hooks/usePublicSiteSettings";
+import { motion } from "framer-motion";
+import { useToast } from "@/hooks/use-toast";
+import { Tv, Mail, Lock, Loader2 } from "lucide-react";
+
+const Auth = () => {
+  const { signIn, user } = useAuth();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const { data: siteSettings } = usePublicSiteSettings();
+  const [isLoading, setIsLoading] = useState(false);
+  const [loginData, setLoginData] = useState({ email: '', password: '' });
+
+  // Get the correct admin path based on custom slug
+  const getAdminPath = () => {
+    const adminSlug = siteSettings?.admin_slug;
+    if (adminSlug && adminSlug !== 'admin' && adminSlug.trim() !== '') {
+      return `/${adminSlug}`;
+    }
+    return '/admin';
+  };
+
+  // Redirect if already logged in
+  useEffect(() => {
+    if (user) {
+      navigate(getAdminPath());
+    }
+  }, [user, navigate, siteSettings]);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    
+    try {
+      const { error } = await signIn(loginData.email, loginData.password);
+      
+      if (error) {
+        toast({
+          title: "Login failed",
+          description: error.message,
+          variant: "destructive",
+        });
+        setIsLoading(false);
+        return;
+      }
+
+      toast({
+        title: "Welcome back!",
+        description: "Logged in successfully",
+      });
+      navigate(getAdminPath());
+    } catch (error: any) {
+      toast({
+        title: "Login failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+    
+    setIsLoading(false);
+  };
+
+  if (user) {
+    return null;
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col bg-background">
+      <Header />
+      <main className="flex-1 flex items-center justify-center py-20">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.3 }}
+          className="w-full max-w-md mx-4"
+        >
+          <Card>
+            <CardHeader className="text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-primary to-pink-500 flex items-center justify-center shadow-lg shadow-primary/30">
+                <Tv className="w-8 h-8 text-primary-foreground" />
+              </div>
+              <CardTitle className="font-display text-3xl tracking-wider text-gradient">
+                ADMIN LOGIN
+              </CardTitle>
+              <CardDescription>
+                Sign in to manage matches and content
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleLogin} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="login-email">Email</Label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      id="login-email"
+                      type="email"
+                      placeholder="admin@example.com"
+                      className="pl-10"
+                      value={loginData.email}
+                      onChange={(e) => setLoginData({ ...loginData, email: e.target.value })}
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="login-password">Password</Label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      id="login-password"
+                      type="password"
+                      placeholder="••••••••"
+                      className="pl-10"
+                      value={loginData.password}
+                      onChange={(e) => setLoginData({ ...loginData, password: e.target.value })}
+                      required
+                    />
+                  </div>
+                </div>
+                <Button type="submit" variant="gradient" className="w-full" disabled={isLoading}>
+                  {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Sign In'}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+        </motion.div>
+      </main>
+      <Footer />
+    </div>
+  );
+};
+
+export default Auth;

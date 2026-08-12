@@ -1,0 +1,659 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+interface GoalEvent {
+  player: string;
+  minute: string;
+  assist?: string;
+  type: 'goal' | 'penalty' | 'own_goal';
+}
+
+interface SubstitutionEvent {
+  playerOut: string;
+  playerIn: string;
+  minute: string;
+}
+
+interface PlayerInfo {
+  name: string;
+  position: string;
+  jerseyNumber?: string;
+  isCaptain?: boolean;
+  playerImage?: string;
+  isSub?: boolean;
+  formation?: string;
+  formationPlace?: number;
+}
+
+interface FootballMatch {
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: string | null;
+  awayScore: string | null;
+  status: string;
+  minute: string | null;
+  competition: string | null;
+  startTime: string | null;
+  homeGoals?: GoalEvent[];
+  awayGoals?: GoalEvent[];
+  homeLineup?: PlayerInfo[];
+  awayLineup?: PlayerInfo[];
+  homeSubs?: SubstitutionEvent[];
+  awaySubs?: SubstitutionEvent[];
+  homeCoach?: string;
+  awayCoach?: string;
+}
+
+// Common team name aliases for better matching
+const TEAM_ALIASES: Record<string, string[]> = {
+  'tottenham': ['tottenham hotspur', 'spurs', 'tottenham hotspur fc'],
+  'man city': ['manchester city', 'manchester city fc'],
+  'man utd': ['manchester united', 'manchester united fc', 'man united'],
+  'wolves': ['wolverhampton wanderers', 'wolverhampton'],
+  'brighton': ['brighton & hove albion', 'brighton hove albion', 'brighton and hove albion'],
+  'west ham': ['west ham united', 'west ham utd'],
+  'newcastle': ['newcastle united', 'newcastle utd'],
+  'leeds': ['leeds united', 'leeds utd'],
+  'leicester': ['leicester city', 'leicester city fc'],
+  'aston villa': ['aston villa fc'],
+  'nottm forest': ['nottingham forest', 'notts forest', 'nottingham forest fc'],
+  'bournemouth': ['afc bournemouth'],
+  'crystal palace': ['crystal palace fc'],
+  'everton': ['everton fc'],
+  'arsenal': ['arsenal fc'],
+  'chelsea': ['chelsea fc'],
+  'liverpool': ['liverpool fc'],
+  'fulham': ['fulham fc'],
+  'brentford': ['brentford fc'],
+  'ipswich': ['ipswich town', 'ipswich town fc'],
+  'southampton': ['southampton fc'],
+  'charlton': ['charlton athletic', 'charlton athletic fc'],
+};
+
+// Get all possible name variations for a team
+function getTeamVariations(name: string): string[] {
+  const normalized = name.toLowerCase().trim();
+  const variations = [normalized];
+  
+  // Add aliases
+  for (const [key, aliases] of Object.entries(TEAM_ALIASES)) {
+    if (normalized.includes(key) || aliases.some(a => normalized.includes(a))) {
+      variations.push(key, ...aliases);
+    }
+  }
+  
+  return [...new Set(variations)];
+}
+
+// Normalize team name for matching
+function normalizeTeamName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\s+fc$/i, '')
+    .replace(/\s+united$/i, ' utd')
+    .replace(/\s+city$/i, '')
+    .replace(/manchester\s+/i, 'man ')
+    .replace(/tottenham\s+hotspur/i, 'tottenham')
+    .replace(/wolverhampton\s+wanderers/i, 'wolves')
+    .replace(/west\s+ham\s+united/i, 'west ham')
+    .replace(/newcastle\s+united/i, 'newcastle')
+    .replace(/brighton\s+(&|and)\s+hove\s+albion/i, 'brighton')
+    .replace(/afc\s+bournemouth/i, 'bournemouth')
+    .replace(/nottingham\s+forest/i, 'nottm forest')
+    .replace(/leicester\s+city/i, 'leicester')
+    .replace(/leeds\s+united/i, 'leeds')
+    .replace(/charlton\s+athletic/i, 'charlton')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Match team names with fuzzy matching
+function teamsMatch(dbTeam: string, apiTeam: string): boolean {
+  const normalizedDb = normalizeTeamName(dbTeam);
+  const normalizedApi = normalizeTeamName(apiTeam);
+  
+  // Direct match
+  if (normalizedDb === normalizedApi) return true;
+  
+  // Substring match
+  if (normalizedDb.includes(normalizedApi) || normalizedApi.includes(normalizedDb)) return true;
+  
+  // Check aliases
+  const dbVariations = getTeamVariations(dbTeam);
+  const apiVariations = getTeamVariations(apiTeam);
+  
+  for (const dbVar of dbVariations) {
+    for (const apiVar of apiVariations) {
+      if (dbVar === apiVar) return true;
+      if (dbVar.includes(apiVar) || apiVar.includes(dbVar)) return true;
+    }
+  }
+  
+  // Word matching
+  const dbWords = normalizedDb.split(' ').filter(w => w.length > 2);
+  const apiWords = normalizedApi.split(' ').filter(w => w.length > 2);
+  
+  const matchingWords = dbWords.filter(w => apiWords.includes(w));
+  if (matchingWords.length >= 1 && matchingWords.length >= Math.min(dbWords.length, apiWords.length) * 0.5) {
+    return true;
+  }
+  
+  return false;
+}
+
+serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    console.log('[auto-sync-football] Starting automatic football score sync...');
+    
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    // Get all live AND recently completed football matches with auto_sync enabled
+    const now = new Date();
+    const { data: sportsData } = await supabase
+      .from('sports')
+      .select('id')
+      .ilike('name', '%football%');
+    
+    const footballSportIds = (sportsData || []).map(s => s.id);
+    
+    if (footballSportIds.length === 0) {
+      console.log('[auto-sync-football] No football sport found');
+      return new Response(JSON.stringify({ success: true, message: 'No football sport found' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Get matches: live, completed (48h), and upcoming within 60 minutes
+    const { data: liveMatches, error: matchError } = await supabase
+      .from('matches')
+      .select(`
+        id,
+        team_a_id,
+        team_b_id,
+        score_a,
+        score_b,
+        status,
+        match_minute,
+        sport_id,
+        auto_sync_enabled,
+        match_start_time,
+        espn_event_id,
+        team_a:teams!matches_team_a_id_fkey(name, short_name, aliases),
+        team_b:teams!matches_team_b_id_fkey(name, short_name, aliases)
+      `)
+      .in('status', ['upcoming', 'live', 'completed'])
+      .eq('is_active', true)
+      .eq('auto_sync_enabled', true)
+      .in('sport_id', footballSportIds);
+
+    if (matchError) {
+      console.error('[auto-sync-football] Error fetching matches:', matchError);
+      throw matchError;
+    }
+
+    // Backfill: find completed matches whose playing XI is missing formation_place
+    const { data: backfillRows } = await supabase
+      .from('match_playing_xi')
+      .select('match_id')
+      .is('formation_place', null);
+    const backfillIds = new Set((backfillRows || []).map((r: any) => r.match_id));
+
+    // Filter: completed within 48h (or needs backfill), live always, upcoming within 60 minutes
+    const footballMatches = (liveMatches || []).filter(m => {
+      if (m.status === 'completed') {
+        if (m.match_start_time) {
+          const hoursSinceMatch = (now.getTime() - new Date(m.match_start_time).getTime()) / (1000 * 60 * 60);
+          if (hoursSinceMatch <= 48) return true;
+        }
+        // Older completed matches: only re-sync if they still need formation backfill
+        return !!m.espn_event_id && backfillIds.has(m.id);
+      }
+      if (m.status === 'upcoming' && m.match_start_time) {
+        const matchTime = new Date(m.match_start_time);
+        const minutesUntilMatch = (matchTime.getTime() - now.getTime()) / (1000 * 60);
+        return minutesUntilMatch <= 60 && minutesUntilMatch >= -10;
+      }
+      return true; // Live matches always sync
+    });
+
+    if (footballMatches.length === 0) {
+      console.log('[auto-sync-football] No football matches to sync');
+      return new Response(JSON.stringify({ success: true, message: 'No matches to sync', updated: 0 }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    console.log(`[auto-sync-football] Found ${footballMatches.length} football matches to sync`);
+
+    let updatedCount = 0;
+    const results: { matchId: string; teamA: string; teamB: string; scoreA: string | null; scoreB: string | null }[] = [];
+    const matchedDbIds = new Set<string>();
+    let apiMatches: FootballMatch[] = [];
+
+    // ---- Helpers for ESPN-direct (per-match) summary fetch ----
+    function pickHeadshot(athlete: any): string | undefined {
+      const h = athlete?.headshot;
+      if (typeof h === 'string' && h.startsWith('http')) return h;
+      if (h && typeof h === 'object' && typeof h.href === 'string' && h.href.startsWith('http')) return h.href;
+      return undefined;
+    }
+    async function fetchEspnSummary(eventId: string): Promise<FootballMatch | null> {
+      try {
+        const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=${eventId}`;
+        const res = await fetch(url, { headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+        if (!res.ok) { console.warn(`[espn-direct] ${eventId} HTTP ${res.status}`); return null; }
+        const data = await res.json();
+        const comp = data?.header?.competitions?.[0];
+        const home = (comp?.competitors || []).find((c: any) => c.homeAway === 'home');
+        const away = (comp?.competitors || []).find((c: any) => c.homeAway === 'away');
+        if (!home || !away) return null;
+
+        const statusType = comp?.status?.type?.name || data?.header?.competitions?.[0]?.status?.type?.name || '';
+        let status = 'Scheduled';
+        if (/FINAL|FULL_TIME|POSTGAME/i.test(statusType)) status = 'Completed';
+        else if (/HALFTIME|HALF_TIME|END_OF_1ST_HALF/i.test(statusType)) status = 'Half Time';
+        else if (/IN_PROGRESS|FIRST_HALF|SECOND_HALF|EXTRA|LIVE|SHOOTOUT/i.test(statusType)) status = 'Live';
+        const clock = comp?.status?.displayClock || null;
+
+        // Lineups + coaches from rosters
+        const homeLineup: PlayerInfo[] = [];
+        const awayLineup: PlayerInfo[] = [];
+        let homeCoach: string | undefined;
+        let awayCoach: string | undefined;
+        for (const roster of (data?.rosters || [])) {
+          const isHome = roster.homeAway === 'home';
+          const target = isHome ? homeLineup : awayLineup;
+          const formationName = roster?.formation?.name || roster?.formation || null;
+          for (const entry of (roster.roster || [])) {
+            const a = entry.athlete;
+            if (!a) continue;
+            const fpRaw = entry.formationPlace;
+            const fp = fpRaw != null && fpRaw !== '' ? parseInt(String(fpRaw), 10) : null;
+            target.push({
+              name: a.displayName || a.fullName || 'Unknown',
+              position: entry.position?.abbreviation || a.position?.abbreviation || '',
+              jerseyNumber: a.jersey || entry.jersey,
+              isCaptain: !!entry.captain,
+              playerImage: pickHeadshot(a),
+              isSub: entry.starter === false,
+              formation: formationName || undefined,
+              formationPlace: Number.isFinite(fp as number) && (fp as number) > 0 ? (fp as number) : undefined,
+            });
+          }
+          // Coach (single object or array depending on payload)
+          const coachRaw = roster.coach;
+          const firstCoach = Array.isArray(coachRaw) ? coachRaw[0] : coachRaw;
+          const coachName = firstCoach?.displayName || firstCoach?.fullName ||
+            [firstCoach?.firstName, firstCoach?.lastName].filter(Boolean).join(' ');
+          if (coachName) { if (isHome) homeCoach = coachName; else awayCoach = coachName; }
+        }
+
+        // Goals + substitutions from keyEvents (preferred) with scoringPlays fallback
+        const homeGoals: GoalEvent[] = [];
+        const awayGoals: GoalEvent[] = [];
+        const homeSubs: SubstitutionEvent[] = [];
+        const awaySubs: SubstitutionEvent[] = [];
+        const homeTeamId = home.team?.id;
+        const keyEvents = data?.keyEvents || [];
+        for (const p of keyEvents) {
+          const evType = String(p?.type?.type || '').toLowerCase();
+          const evText = String(p?.type?.text || '').toLowerCase();
+          const tid = p.team?.id;
+          const isHomeSide = tid && String(tid) === String(homeTeamId);
+          const minute = String(p.clock?.displayValue || '').replace("'", '');
+
+          // Goals: type starts with "goal" (goal, goal---header, goal---penalty, etc.)
+          if (evType.startsWith('goal') || p?.scoringPlay === true) {
+            const player = p?.participants?.[0]?.athlete?.displayName || p?.athletesInvolved?.[0]?.displayName || '';
+            if (!player) continue;
+            const assist = p?.participants?.[1]?.athlete?.displayName || undefined;
+            const txt = (evText + ' ' + String(p?.text || '')).toLowerCase();
+            let type: 'goal' | 'penalty' | 'own_goal' = 'goal';
+            if (evType.includes('penalty') || txt.includes('penalty')) type = 'penalty';
+            else if (evType.includes('own') || txt.includes('own goal')) type = 'own_goal';
+            const target = isHomeSide ? homeGoals : awayGoals;
+            target.push({ player, minute, type, assist });
+          } else if (evType === 'substitution' || evText === 'substitution') {
+            const playerIn = p?.participants?.[0]?.athlete?.displayName || '';
+            const playerOut = p?.participants?.[1]?.athlete?.displayName || '';
+            if (!playerIn || !playerOut) continue;
+            const target = isHomeSide ? homeSubs : awaySubs;
+            target.push({ playerIn, playerOut, minute });
+          }
+        }
+
+        // Fallback: legacy scoringPlays if keyEvents was empty
+        if (homeGoals.length === 0 && awayGoals.length === 0) {
+          for (const p of (data?.scoringPlays || [])) {
+            const tid = p.team?.id;
+            const isHomeGoal = tid && String(tid) === String(homeTeamId);
+            const target = isHomeGoal ? homeGoals : awayGoals;
+            const minute = p.clock?.displayValue || (p.period?.displayValue ?? '');
+            const player = p?.athletesInvolved?.[0]?.displayName || p?.participants?.[0]?.athlete?.displayName || '';
+            if (!player) continue;
+            const txt = (p?.type?.text || p?.text || '').toLowerCase();
+            let type: 'goal' | 'penalty' | 'own_goal' = 'goal';
+            if (txt.includes('penalty')) type = 'penalty';
+            else if (txt.includes('own')) type = 'own_goal';
+            target.push({ player, minute: String(minute).replace("'", ''), type });
+          }
+        }
+
+        return {
+          homeTeam: home.team?.displayName || '',
+          awayTeam: away.team?.displayName || '',
+          homeScore: home.score != null ? String(home.score) : null,
+          awayScore: away.score != null ? String(away.score) : null,
+          status,
+          minute: clock,
+          competition: data?.header?.league?.name || null,
+          startTime: data?.header?.competitions?.[0]?.date || null,
+          homeGoals: homeGoals.length ? homeGoals : undefined,
+          awayGoals: awayGoals.length ? awayGoals : undefined,
+          homeLineup: homeLineup.length ? homeLineup : undefined,
+          awayLineup: awayLineup.length ? awayLineup : undefined,
+          homeSubs: homeSubs.length ? homeSubs : undefined,
+          awaySubs: awaySubs.length ? awaySubs : undefined,
+          homeCoach, awayCoach,
+        };
+      } catch (e) {
+        console.warn(`[espn-direct] error for ${eventId}:`, e);
+        return null;
+      }
+    }
+
+    // ---- Pass 1: ESPN direct summary for matches with espn_event_id ----
+    const directCandidates = footballMatches.filter((m: any) => !!m.espn_event_id);
+    console.log(`[auto-sync-football] ESPN-direct pass for ${directCandidates.length} matches`);
+    for (const dbMatch of directCandidates) {
+      const summary = await fetchEspnSummary(String((dbMatch as any).espn_event_id));
+      if (!summary) continue;
+      matchedDbIds.add(dbMatch.id);
+      // Summary is oriented to home=teamA only if our team_a was the home side.
+      const teamA = (dbMatch.team_a as any); const teamB = (dbMatch.team_b as any);
+      const aName = teamA?.name || ''; const bName = teamB?.name || '';
+      const aShort = teamA?.short_name || ''; const bShort = teamB?.short_name || '';
+      const homeIsA = teamsMatch(aName, summary.homeTeam) || teamsMatch(aShort, summary.homeTeam);
+      const homeIsB = !homeIsA && (teamsMatch(bName, summary.homeTeam) || teamsMatch(bShort, summary.homeTeam));
+      const isReversed = homeIsB; // home in API == our teamB
+      await processOne(dbMatch, summary, isReversed, 'espn');
+    }
+
+    // Per-match processing logic — used for both ESPN and Sofascore passes.
+    async function processOne(dbMatch: any, matchedApi: FootballMatch, isReversed: boolean, source: 'espn' | 'sofa') {
+      const teamA = (dbMatch.team_a as unknown) as { name: string; short_name: string } | null;
+      const teamB = (dbMatch.team_b as unknown) as { name: string; short_name: string } | null;
+      const teamAName = teamA?.name || '';
+      const teamBName = teamB?.name || '';
+      const teamAId = dbMatch.team_a_id;
+      const teamBId = dbMatch.team_b_id;
+
+      const newScoreA = isReversed ? matchedApi.awayScore : matchedApi.homeScore;
+      const newScoreB = isReversed ? matchedApi.homeScore : matchedApi.awayScore;
+      const goalsTeamA = isReversed ? matchedApi.awayGoals : matchedApi.homeGoals;
+      const goalsTeamB = isReversed ? matchedApi.homeGoals : matchedApi.awayGoals;
+      const lineupTeamA = isReversed ? matchedApi.awayLineup : matchedApi.homeLineup;
+      const lineupTeamB = isReversed ? matchedApi.homeLineup : matchedApi.awayLineup;
+      const subsTeamA = isReversed ? matchedApi.awaySubs : matchedApi.homeSubs;
+      const subsTeamB = isReversed ? matchedApi.homeSubs : matchedApi.awaySubs;
+
+      let newMinute: number | null = null;
+      if (matchedApi.minute) {
+        const mm = matchedApi.minute.match(/(\d+)/);
+        if (mm) newMinute = parseInt(mm[1], 10);
+      }
+
+      let newStatus = dbMatch.status;
+      if (matchedApi.status === 'Completed') newStatus = 'completed';
+      else if (matchedApi.status === 'Half Time') { newStatus = 'live'; newMinute = 45; }
+      else if (matchedApi.status === 'Live') newStatus = 'live';
+      else if (dbMatch.status === 'live' && matchedApi.status === 'Scheduled') newStatus = 'live';
+
+      if (newMinute === null && newStatus === 'live' && dbMatch.match_start_time) {
+        const startTime = new Date(dbMatch.match_start_time).getTime();
+        const elapsedMin = (Date.now() - startTime) / 1000 / 60;
+        if (elapsedMin <= 47) newMinute = Math.min(Math.floor(elapsedMin), 45);
+        else if (elapsedMin <= 63) newMinute = 45;
+        else newMinute = Math.min(Math.floor(elapsedMin - 15), 90);
+      }
+
+      const scoreChanged = newScoreA !== dbMatch.score_a || newScoreB !== dbMatch.score_b;
+      const minuteChanged = newMinute !== null && newMinute !== dbMatch.match_minute;
+      const statusChanged = newStatus !== dbMatch.status;
+      const hasGoalData = (goalsTeamA?.length || 0) > 0 || (goalsTeamB?.length || 0) > 0;
+
+      if (scoreChanged || minuteChanged || statusChanged || hasGoalData) {
+        const updateData: Record<string, unknown> = {};
+        if (newScoreA !== null) updateData.score_a = newScoreA;
+        if (newScoreB !== null) updateData.score_b = newScoreB;
+        if (newMinute !== null) updateData.match_minute = newMinute;
+        if (statusChanged) updateData.status = newStatus;
+        if (goalsTeamA) updateData.goals_team_a = goalsTeamA;
+        if (goalsTeamB) updateData.goals_team_b = goalsTeamB;
+        const coachA = isReversed ? matchedApi.awayCoach : matchedApi.homeCoach;
+        const coachB = isReversed ? matchedApi.homeCoach : matchedApi.awayCoach;
+        if (coachA) updateData.head_coach_a = coachA;
+        if (coachB) updateData.head_coach_b = coachB;
+        updateData.last_api_sync = new Date().toISOString();
+        const { error: updateError } = await supabase.from('matches').update(updateData).eq('id', dbMatch.id);
+        if (!updateError) {
+          console.log(`[auto-sync-football][${source}] Updated ${teamAName} vs ${teamBName}: ${newScoreA}-${newScoreB} (${newMinute}')`);
+          updatedCount++;
+          results.push({ matchId: dbMatch.id, teamA: teamAName, teamB: teamBName, scoreA: newScoreA, scoreB: newScoreB });
+        } else {
+          console.error(`[auto-sync-football][${source}] update error`, updateError);
+        }
+      }
+
+      // Lineup sync (same logic as before)
+      if (lineupTeamA?.length || lineupTeamB?.length) {
+        const { data: existingTeamAPlayers } = await supabase.from('match_playing_xi').select('id, player_name, player_role, player_image, jersey_number, formation, formation_place, is_bench').eq('match_id', dbMatch.id).eq('team_id', teamAId);
+        const { data: existingTeamBPlayers } = await supabase.from('match_playing_xi').select('id, player_name, player_role, player_image, jersey_number, formation, formation_place, is_bench').eq('match_id', dbMatch.id).eq('team_id', teamBId);
+        const existingTeamACount = existingTeamAPlayers?.length || 0;
+        const existingTeamBCount = existingTeamBPlayers?.length || 0;
+        const newTeamACount = lineupTeamA?.length || 0;
+        const newTeamBCount = lineupTeamB?.length || 0;
+        const teamAMissingImages = existingTeamACount > 0 && (existingTeamAPlayers || []).filter(p => !p.player_image).length > existingTeamACount / 2;
+        const teamBMissingImages = existingTeamBCount > 0 && (existingTeamBPlayers || []).filter(p => !p.player_image).length > existingTeamBCount / 2;
+        const newTeamAHasImages = (lineupTeamA || []).some(p => !!p.playerImage);
+        const newTeamBHasImages = (lineupTeamB || []).some(p => !!p.playerImage);
+        // Backfill trigger: existing rows lack formation_place but new data has it
+        const teamAMissingFormation = existingTeamACount > 0 && (existingTeamAPlayers || []).every(p => p.formation_place == null);
+        const teamBMissingFormation = existingTeamBCount > 0 && (existingTeamBPlayers || []).every(p => p.formation_place == null);
+        const newTeamAHasFormation = (lineupTeamA || []).some(p => p.formationPlace != null);
+        const newTeamBHasFormation = (lineupTeamB || []).some(p => p.formationPlace != null);
+        const normalizeName = (name: string) => name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+        const needsAuthoritativeRefresh = (existing: any[] | null | undefined, incoming: PlayerInfo[] | undefined) => {
+          if (!existing?.length || !incoming?.length) return false;
+          const existingByName = new Map(existing.map(p => [normalizeName(p.player_name || ''), p]));
+          return incoming.some(p => {
+            const old = existingByName.get(normalizeName(p.name));
+            if (!old) return true;
+            const jn = p.jerseyNumber != null ? parseInt(String(p.jerseyNumber), 10) : null;
+            return (old.player_role || '') !== (p.position || '')
+              || (old.formation || null) !== (p.formation || null)
+              || (old.formation_place || null) !== (p.formationPlace || null)
+              || (old.jersey_number || null) !== jn
+              || Boolean(old.is_bench) !== Boolean(p.isSub);
+          });
+        };
+        const teamAStaleEspnData = source === 'espn' && needsAuthoritativeRefresh(existingTeamAPlayers, lineupTeamA);
+        const teamBStaleEspnData = source === 'espn' && needsAuthoritativeRefresh(existingTeamBPlayers, lineupTeamB);
+        // Resync when we have NEW info: more players, missing images, or missing formation data
+        const needsTeamASync = newTeamACount > 0 && (existingTeamACount === 0 || newTeamACount > existingTeamACount || (teamAMissingImages && newTeamAHasImages) || (teamAMissingFormation && newTeamAHasFormation) || teamAStaleEspnData);
+        const needsTeamBSync = newTeamBCount > 0 && (existingTeamBCount === 0 || newTeamBCount > existingTeamBCount || (teamBMissingImages && newTeamBHasImages) || (teamBMissingFormation && newTeamBHasFormation) || teamBStaleEspnData);
+        if (needsTeamASync || needsTeamBSync) {
+          const lineupInserts: any[] = [];
+          if (needsTeamASync && lineupTeamA) {
+            if (existingTeamACount > 0) await supabase.from('match_playing_xi').delete().eq('match_id', dbMatch.id).eq('team_id', teamAId);
+            for (let i = 0; i < lineupTeamA.length; i++) {
+              const p = lineupTeamA[i];
+              const jn = p.jerseyNumber != null ? parseInt(String(p.jerseyNumber), 10) : NaN;
+              lineupInserts.push({ match_id: dbMatch.id, team_id: teamAId, player_name: p.name, player_role: p.position || null, batting_order: Number.isFinite(jn) ? jn : (i + 1), jersey_number: Number.isFinite(jn) ? jn : null, formation: p.formation || null, formation_place: p.formationPlace || null, is_captain: p.isCaptain || false, is_vice_captain: false, is_bench: !!p.isSub, player_image: p.playerImage || null });
+            }
+          }
+          if (needsTeamBSync && lineupTeamB) {
+            if (existingTeamBCount > 0) await supabase.from('match_playing_xi').delete().eq('match_id', dbMatch.id).eq('team_id', teamBId);
+            for (let i = 0; i < lineupTeamB.length; i++) {
+              const p = lineupTeamB[i];
+              const jn = p.jerseyNumber != null ? parseInt(String(p.jerseyNumber), 10) : NaN;
+              lineupInserts.push({ match_id: dbMatch.id, team_id: teamBId, player_name: p.name, player_role: p.position || null, batting_order: Number.isFinite(jn) ? jn : (i + 1), jersey_number: Number.isFinite(jn) ? jn : null, formation: p.formation || null, formation_place: p.formationPlace || null, is_captain: p.isCaptain || false, is_vice_captain: false, is_bench: !!p.isSub, player_image: p.playerImage || null });
+            }
+          }
+          if (lineupInserts.length > 0) {
+            const { error: lineupError } = await supabase.from('match_playing_xi').insert(lineupInserts);
+            if (lineupError) console.error(`[auto-sync-football][${source}] lineup insert error`, lineupError);
+            else console.log(`[auto-sync-football][${source}] inserted ${lineupInserts.length} players`);
+          }
+        }
+      }
+
+      // Substitutions
+      if (subsTeamA?.length || subsTeamB?.length) {
+        const { data: existingSubs } = await supabase.from('match_substitutions').select('id, minute, player_in, player_out').eq('match_id', dbMatch.id);
+        const existingSubsSet = new Set((existingSubs || []).map(s => `${s.minute}-${s.player_in}-${s.player_out}`));
+        const subsInserts: any[] = [];
+        const push = (arr: SubstitutionEvent[] | undefined, teamId: string) => {
+          if (!arr) return;
+          for (const sub of arr) {
+            if (!sub.playerIn || !sub.playerOut || sub.playerIn === 'Unknown' || sub.playerOut === 'Unknown') continue;
+            const key = `${sub.minute}-${sub.playerIn}-${sub.playerOut}`;
+            if (!existingSubsSet.has(key)) {
+              subsInserts.push({ match_id: dbMatch.id, team_id: teamId, player_out: sub.playerOut, player_in: sub.playerIn, minute: sub.minute });
+              existingSubsSet.add(key);
+            }
+          }
+        };
+        push(subsTeamA, teamAId);
+        push(subsTeamB, teamBId);
+        if (subsInserts.length > 0) {
+          const { error: subsError } = await supabase.from('match_substitutions').insert(subsInserts);
+          if (subsError) console.error(`[auto-sync-football][${source}] subs insert error`, subsError);
+          else console.log(`[auto-sync-football][${source}] inserted ${subsInserts.length} subs`);
+        }
+      }
+    }
+
+    // ---- Pass 2: Scoreboard scrape for matches WITHOUT espn_event_id (or that direct pass missed) ----
+    const needsScoreboard = footballMatches.filter(m => !matchedDbIds.has(m.id));
+    if (needsScoreboard.length > 0) {
+      try {
+        const { data: apiResponse, error: apiError } = await supabase.functions.invoke(
+          'scrape-football-scores',
+          { body: { allLeagues: true, includeDetails: true } }
+        );
+        if (apiError || !apiResponse?.success) {
+          console.warn('[auto-sync-football] scoreboard pass skipped:', apiError?.message || apiResponse?.error);
+        } else {
+          apiMatches = apiResponse.matches || [];
+          console.log(`[auto-sync-football] scoreboard returned ${apiMatches.length} matches`);
+        }
+      } catch (e) {
+        console.warn('[auto-sync-football] scoreboard fetch error:', e);
+      }
+    }
+
+    // Match and update scores from scoreboard data
+    for (const dbMatch of footballMatches) {
+      // Already handled by ESPN-direct pass
+      if (matchedDbIds.has(dbMatch.id)) continue;
+      const teamA = (dbMatch.team_a as unknown) as { name: string; short_name: string } | null;
+      const teamB = (dbMatch.team_b as unknown) as { name: string; short_name: string } | null;
+      const teamAName = teamA?.name || '';
+      const teamAShort = teamA?.short_name || '';
+      const teamBName = teamB?.name || '';
+      const teamBShort = teamB?.short_name || '';
+
+      // Find matching API match
+      const apiMatch = apiMatches.find(api => {
+        const homeMatches = teamsMatch(teamAName, api.homeTeam) || teamsMatch(teamAShort, api.homeTeam);
+        const awayMatches = teamsMatch(teamBName, api.awayTeam) || teamsMatch(teamBShort, api.awayTeam);
+        return homeMatches && awayMatches;
+      });
+
+      // Also check reverse (in case home/away is swapped)
+      const apiMatchReverse = !apiMatch ? apiMatches.find(api => {
+        const homeMatches = teamsMatch(teamBName, api.homeTeam) || teamsMatch(teamBShort, api.homeTeam);
+        const awayMatches = teamsMatch(teamAName, api.awayTeam) || teamsMatch(teamAShort, api.awayTeam);
+        return homeMatches && awayMatches;
+      }) : null;
+
+      const matchedApi = apiMatch || apiMatchReverse;
+      const isReversed = !!apiMatchReverse && !apiMatch;
+
+      if (matchedApi) {
+        matchedDbIds.add(dbMatch.id);
+        await processOne(dbMatch, matchedApi as FootballMatch, isReversed, 'espn');
+      } else {
+        console.log(`[auto-sync-football] No ESPN match found for ${teamAName} vs ${teamBName}`);
+      }
+    }
+
+    // ---- Sofascore fallback for unmatched matches ----
+    const unmatched = footballMatches.filter(m => !matchedDbIds.has(m.id));
+    if (unmatched.length > 0) {
+      console.log(`[auto-sync-football] Trying Sofascore fallback for ${unmatched.length} unmatched matches`);
+      const sofaPayload = unmatched.map(m => {
+        const ta = m.team_a as any; const tb = m.team_b as any;
+        return {
+          id: m.id,
+          teamA: ta?.name || '',
+          teamB: tb?.name || '',
+          aliasesA: Array.isArray(ta?.aliases) ? ta.aliases : [],
+          aliasesB: Array.isArray(tb?.aliases) ? tb.aliases : [],
+        };
+      });
+      try {
+        const { data: sofaResp, error: sofaErr } = await supabase.functions.invoke('scrape-sofascore-football', { body: { matches: sofaPayload } });
+        if (sofaErr) {
+          console.warn('[auto-sync-football] Sofascore fallback failed:', sofaErr.message);
+        } else {
+          const sofaMatches: FootballMatch[] = (sofaResp as any)?.matches || [];
+          console.log(`[auto-sync-football] Sofascore returned ${sofaMatches.length} matches`);
+          for (const sm of sofaMatches) {
+            const db = unmatched.find(u => u.id === (sm as any).matchId);
+            if (!db) continue;
+            // Sofascore output is already oriented to teamA/teamB (home=teamA), so isReversed=false
+            await processOne(db, sm, false, 'sofa');
+          }
+        }
+      } catch (e) {
+        console.warn('[auto-sync-football] Sofascore fallback exception:', e);
+      }
+    }
+
+
+    console.log(`[auto-sync-football] Sync complete. Updated ${updatedCount} matches.`);
+
+    return new Response(JSON.stringify({ 
+      success: true, 
+      updated: updatedCount,
+      results,
+      totalMatches: footballMatches.length,
+      apiMatchesFound: apiMatches.length,
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    console.error('[auto-sync-football] Error:', error);
+    return new Response(JSON.stringify({ 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+});
