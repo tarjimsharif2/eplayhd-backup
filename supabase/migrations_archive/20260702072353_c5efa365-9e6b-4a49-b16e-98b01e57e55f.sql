@@ -1,1 +1,0 @@
-ALTER TABLE public.streaming_servers ADD COLUMN IF NOT EXISTS name_locked BOOLEAN NOT NULL DEFAULT false;

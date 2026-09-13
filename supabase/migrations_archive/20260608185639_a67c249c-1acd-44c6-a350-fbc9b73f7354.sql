@@ -1,1 +1,0 @@
-ALTER TABLE public.matches ADD COLUMN IF NOT EXISTS manual_scoreboard_enabled BOOLEAN NOT NULL DEFAULT false;

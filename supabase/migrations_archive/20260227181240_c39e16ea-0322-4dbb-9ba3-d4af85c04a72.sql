@@ -1,1 +1,0 @@
-ALTER TABLE matches ADD COLUMN IF NOT EXISTS auto_match_result_enabled boolean DEFAULT true;
