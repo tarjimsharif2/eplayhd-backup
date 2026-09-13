@@ -1,1 +1,0 @@
-ALTER TABLE public.site_settings_public ADD COLUMN IF NOT EXISTS playing_xi_auto_sync_source TEXT DEFAULT 'api_cricket';
