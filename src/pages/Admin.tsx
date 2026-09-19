@@ -5049,6 +5049,12 @@ const Admin = () => {
             <TabsContent value="events" className="space-y-6">
               <EventsManager />
             </TabsContent>
+
+            {/* Backup Tab */}
+            <TabsContent value="backup" className="space-y-6">
+              <BackupManager />
+            </TabsContent>
+
           </Tabs>
         </div>
       </main>
