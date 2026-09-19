@@ -1844,6 +1844,12 @@ const Admin = () => {
                     Maintenance
                   </TabsTrigger>
                 )}
+                {canManageSettings && (
+                  <TabsTrigger value="backup" className="text-xs sm:text-sm whitespace-nowrap px-2 sm:px-3">
+                    Backup
+                  </TabsTrigger>
+                )}
+
               </TabsList>
             </div>
 
