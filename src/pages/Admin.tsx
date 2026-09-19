@@ -66,6 +66,8 @@ import EventsManager from "@/components/EventsManager";
 import TournamentVenueManager from "@/components/TournamentVenueManager";
 import { useTournamentVenues } from "@/hooks/useTournamentVenues";
 import VenueComboInput from "@/components/VenueComboInput";
+import BackupManager from "@/components/BackupManager";
+
 
 const Admin = () => {
   const { user, loading, signOut } = useAuth();
