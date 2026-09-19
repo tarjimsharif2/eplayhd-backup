@@ -189,7 +189,9 @@ export const TAB_PERMISSIONS: Record<string, PermissionKey[]> = {
   'sponsor': ['manage_sponsor_notices'],
   'settings': ['manage_settings'],
   'users': ['manage_users'],
+  'backup': ['manage_settings'],
 };
+
 
 // Get visible tabs based on user permissions
 export const useVisibleAdminTabs = (): string[] => {

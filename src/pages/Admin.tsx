@@ -66,6 +66,8 @@ import EventsManager from "@/components/EventsManager";
 import TournamentVenueManager from "@/components/TournamentVenueManager";
 import { useTournamentVenues } from "@/hooks/useTournamentVenues";
 import VenueComboInput from "@/components/VenueComboInput";
+import BackupManager from "@/components/BackupManager";
+
 
 const Admin = () => {
   const { user, loading, signOut } = useAuth();
@@ -1844,6 +1846,12 @@ const Admin = () => {
                     Maintenance
                   </TabsTrigger>
                 )}
+                {canManageSettings && (
+                  <TabsTrigger value="backup" className="text-xs sm:text-sm whitespace-nowrap px-2 sm:px-3">
+                    Backup
+                  </TabsTrigger>
+                )}
+
               </TabsList>
             </div>
 
@@ -5049,6 +5057,12 @@ const Admin = () => {
             <TabsContent value="events" className="space-y-6">
               <EventsManager />
             </TabsContent>
+
+            {/* Backup Tab */}
+            <TabsContent value="backup" className="space-y-6">
+              <BackupManager />
+            </TabsContent>
+
           </Tabs>
         </div>
       </main>
