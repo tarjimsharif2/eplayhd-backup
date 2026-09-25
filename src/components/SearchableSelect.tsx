@@ -97,7 +97,7 @@ const SearchableSelect = ({
               className="flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
-          <div className="max-h-60 overflow-y-auto overscroll-contain">
+          <div className="max-h-60 overflow-y-auto overscroll-contain touch-pan-y" onWheel={(e) => e.stopPropagation()} onTouchMove={(e) => e.stopPropagation()}>
             {filteredOptions.length === 0 ? (
               <div className="py-6 text-center text-sm text-muted-foreground">{emptyText}</div>
             ) : (
