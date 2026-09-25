@@ -52,6 +52,7 @@ const FALLBACK_LEAGUES = [
   { value: 'uefa.champions', label: 'UEFA Champions League' },
   { value: 'uefa.europa', label: 'UEFA Europa League' },
   { value: 'fifa.friendly', label: 'International Friendly' },
+  { value: 'club.friendly', label: 'Club Friendly' },
 ];
 
 export default function FootballMatchImporter({ onImportComplete }: FootballMatchImporterProps) {
