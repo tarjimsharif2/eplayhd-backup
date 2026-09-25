@@ -15,6 +15,19 @@ interface LeagueInfo {
   name: string;
 }
 
+const EXTRA_LEAGUES: LeagueInfo[] = [
+  ['aff.championship','ASEAN Championship (AFF Cup)'],['afc.cup','AFC Cup'],['afc.champions','AFC Champions League Elite'],
+  ['afc.asian.cup','AFC Asian Cup'],['fifa.worldq.afc','World Cup Qualifying - AFC'],['fifa.worldq.uefa','World Cup Qualifying - UEFA'],
+  ['fifa.worldq.conmebol','World Cup Qualifying - CONMEBOL'],['fifa.worldq.concacaf','World Cup Qualifying - CONCACAF'],
+  ['fifa.worldq.caf','World Cup Qualifying - CAF'],['fifa.world','FIFA World Cup'],['fifa.cwc','FIFA Club World Cup'],
+  ['saff.championship','SAFF Championship'],['uefa.nations','UEFA Nations League'],['uefa.euro','UEFA Euro'],
+  ['uefa.euroq','UEFA Euro Qualifying'],['uefa.champions','UEFA Champions League'],['uefa.europa','UEFA Europa League'],
+  ['uefa.europa.conf','UEFA Conference League'],['conmebol.america','Copa America'],['conmebol.libertadores','Copa Libertadores'],
+  ['concacaf.gold','CONCACAF Gold Cup'],['caf.nations','Africa Cup of Nations'],['fifa.friendly','International Friendly'],
+  ['club.friendly','Club Friendly'],['ind.1','Indian Super League'],['ksa.1','Saudi Pro League'],['jpn.1','J1 League'],
+  ['usa.1','MLS'],['ger.1','Bundesliga'],['eng.1','Premier League'],['esp.1','LaLiga'],['ita.1','Serie A'],['fra.1','Ligue 1'],
+].map(([code,name]) => ({ code, name }));
+
 Deno.serve(async (req) => {
   // Handle CORS
   if (req.method === 'OPTIONS') {
@@ -30,6 +43,7 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
     
     const leagues = new Map<string, LeagueInfo>();
+    for (const l of EXTRA_LEAGUES) leagues.set(l.code, l);
     
     // Fetch from ESPN all scoreboard
     for (const endpoint of ESPN_ENDPOINTS) {
