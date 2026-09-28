@@ -1,3 +1,4 @@
+import { deriveMatchStatus } from '@/lib/matchStatus';
 import { useParams } from 'react-router-dom';
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
@@ -123,7 +124,7 @@ const MatchPage = () => {
         data = dataById;
       }
       
-      setMatch(data as unknown as Match);
+      setMatch(deriveMatchStatus(data) as unknown as Match);
       setLoading(false);
     };
 

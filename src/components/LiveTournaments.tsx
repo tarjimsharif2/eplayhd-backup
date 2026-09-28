@@ -1,3 +1,4 @@
+import { deriveMatchesStatus } from '@/lib/matchStatus';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,15 +14,17 @@ export const useActiveTournaments = () => {
     queryKey: ['tournaments', 'active'],
     queryFn: async () => {
       // Get tournaments that have live matches or recent upcoming matches
-      const { data: tournamentsWithLiveMatches, error: liveError } = await supabase
+      const { data: candidateMatches, error: liveError } = await supabase
         .from('matches')
-        .select('tournament_id')
-        .eq('status', 'live');
+        .select('tournament_id, status, manual_status_override, match_format, match_start_time, match_end_time, match_duration_minutes, match_date, match_time')
+        .in('status', ['live', 'upcoming']);
 
       if (liveError) throw liveError;
 
-      const liveIds = tournamentsWithLiveMatches
-        ?.map(m => m.tournament_id)
+      // Derive live status client-side from start/end times
+      const liveIds = deriveMatchesStatus(candidateMatches)
+        .filter(m => m.status === 'live')
+        .map(m => m.tournament_id)
         .filter(Boolean) || [];
 
       // Get tournaments marked as active AND show_in_homepage = true AND not completed
