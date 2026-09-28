@@ -412,7 +412,8 @@ export const useMatches = () => {
         .order('match_time');
       
       if (error) throw error;
-      return data as Match[];
+      // Derive status client-side from start/end times (no server cron needed)
+      return deriveMatchesStatus(data) as Match[];
     },
     // Serve cached data instantly, revalidate in background. Realtime + interval keep it fresh.
     staleTime: 15_000,

@@ -18,17 +18,18 @@ const useTournamentLiveStatus = (tournamentIds: string[]) => {
       
       const { data, error } = await supabase
         .from('matches')
-        .select('tournament_id')
+        .select('tournament_id, status, manual_status_override, match_format, match_start_time, match_end_time, match_duration_minutes, match_date, match_time')
         .in('tournament_id', tournamentIds)
-        .eq('status', 'live')
+        .in('status', ['live', 'upcoming'])
         .eq('is_active', true);
-      
+
       if (error) throw error;
-      
+
+      // Derive live status client-side from start/end times
       const liveMap: Record<string, boolean> = {};
       tournamentIds.forEach(id => { liveMap[id] = false; });
-      data?.forEach(m => {
-        if (m.tournament_id) liveMap[m.tournament_id] = true;
+      deriveMatchesStatus(data)?.forEach(m => {
+        if (m.status === 'live' && m.tournament_id) liveMap[m.tournament_id] = true;
       });
       return liveMap;
     },

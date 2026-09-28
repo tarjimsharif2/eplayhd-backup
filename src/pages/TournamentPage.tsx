@@ -103,7 +103,7 @@ const TournamentPage = () => {
           .order('match_time', { ascending: true });
         
         if (!matchesError && matchesData) {
-          setMatches(matchesData as unknown as Match[]);
+          setMatches(deriveMatchesStatus(matchesData) as unknown as Match[]);
         }
       }
       

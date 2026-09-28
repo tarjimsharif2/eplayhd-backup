@@ -123,7 +123,7 @@ const MatchPage = () => {
         data = dataById;
       }
       
-      setMatch(data as unknown as Match);
+      setMatch(deriveMatchStatus(data) as unknown as Match);
       setLoading(false);
     };
 
