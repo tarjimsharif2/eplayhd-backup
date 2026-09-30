@@ -25,6 +25,16 @@ interface MatchLike {
   match_time?: string | null;
 }
 
+function defaultDuration(match: MatchLike & { sport?: { name?: string } | null }): number | null {
+  const fmt = (match.match_format || '').toLowerCase();
+  if (fmt === 'test') return null;
+  if (fmt.includes('t20') || fmt.includes('t10')) return 240;
+  if (fmt.includes('odi') || fmt.includes('list')) return 600;
+  const sport = (match.sport?.name || '').toLowerCase();
+  if (sport.includes('football') || sport.includes('soccer')) return 120;
+  return null;
+}
+
 export function deriveMatchStatus<T extends MatchLike>(match: T, now: Date = new Date()): T {
   // Respect manual overrides and terminal statuses
   if (match.manual_status_override) return match;
@@ -40,12 +50,13 @@ export function deriveMatchStatus<T extends MatchLike>(match: T, now: Date = new
     startTime = new Date(`${match.match_date}T${match.match_time}`);
   }
 
-  // Determine end time: explicit match_end_time, else start + explicit duration
+  // Determine end time: explicit match_end_time, else start + duration (explicit or default)
   let endTime: Date | null = null;
+  const duration = match.match_duration_minutes || defaultDuration(match);
   if (match.match_end_time) {
     endTime = new Date(match.match_end_time);
-  } else if (startTime && match.match_duration_minutes) {
-    endTime = new Date(startTime.getTime() + match.match_duration_minutes * 60 * 1000);
+  } else if (startTime && duration) {
+    endTime = new Date(startTime.getTime() + duration * 60 * 1000);
   }
 
   let derived: DerivedStatus = match.status as DerivedStatus;
