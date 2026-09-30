@@ -1,5 +1,5 @@
 import { deriveMatchesStatus } from '@/lib/matchStatus';
-import { useEffect } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -396,7 +396,20 @@ export const useMatches = () => {
     };
   }, [queryClient]);
   
+  // Clock tick so status flips live/completed on time without waiting for a refetch
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 15_000);
+    return () => clearInterval(t);
+  }, []);
+  const select = useCallback(
+    (data: Match[]) => deriveMatchesStatus(data) as Match[],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tick]
+  );
+
   return useQuery({
+    select,
     queryKey: ['matches'],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -413,8 +426,7 @@ export const useMatches = () => {
         .order('match_time');
       
       if (error) throw error;
-      // Derive status client-side from start/end times (no server cron needed)
-      return deriveMatchesStatus(data) as Match[];
+      return data as unknown as Match[];
     },
     // Serve cached data instantly, revalidate in background. Realtime + interval keep it fresh.
     staleTime: 15_000,
